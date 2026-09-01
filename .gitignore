@@ -1,0 +1,4 @@
+node_modules
+hosts
+*.txt
+custom-rules.js

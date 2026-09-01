@@ -1,17 +1,27 @@
+import fs from "fs";
 import dns2, { Packet, UDPClient } from "dns2";
+import customRules from "./custom-rules.js";
+
+const loadList = file =>
+    [...fs.readFileSync(file, "utf8").matchAll(/^(?!\s*\/\/).*?"([^"]*)"/gm)].map(m => m[1]);
+
+const HOSTNAMES = new Set(loadList("./hostnames.txt"));
+const DOMAINS = new Set(loadList("./domains.txt"));
+const STARTS_WITH = ["mdp-appconf", "conn-service", "clients"];
+const SUBSTRINGS = ["mozilla", "opera", "play", "ads"];
+const ENDS_WITH = ["mtalk.google.com", "data.microsoft.com"];
+
+const hosts = new Map(
+    fs.readFileSync("./hosts", "utf8").split(/\r?\n/).map(line => line.split(' ').reverse())
+);
 
 const resolve = UDPClient({ dns: "1.1.1.1" });
 
-const BLOCKED_HOSTS = new Set([
-
-]);
-
-const cache = new Map();
-
-const server = dns2.createServer({
+dns2.createServer({
     udp: true,
     handle: async (req, send) => {
         const name = req.questions[0].name.toLowerCase();
+        const domain = name.split('.').slice(-2).join('.');
 
         const answer = {
             name,
@@ -20,24 +30,33 @@ const server = dns2.createServer({
             ttl: 300
         };
 
-        if (BLOCKED_HOSTS.has(name)) {
+        if (
+            HOSTNAMES.has(name) ||
+            DOMAINS.has(domain) ||
+            STARTS_WITH.some(x => name.startsWith(x)) ||  domain.startsWith("gvt") ||
+            SUBSTRINGS.some(x => name.includes(x)) ||
+            ENDS_WITH.some(x => name.endsWith(x)) ||
+            customRules(name, domain)
+        ) {
             answer.address = "127.0.0.1";
-        } else if (cache.has(name)) {
-            answer.address = cache.get(name);
+        } else if (hosts.has(name)) {
+            answer.address = hosts.get(name);
         } else {
+            console.log(name);
+
             let addr;
 
             for (let i = 0; i < 5; i++) {
                 try {
                     const res = await resolve(name);
-                    addr = res.answers[0].address;
-                    break;
+                    addr = res.answers.find(x => x.address)?.address;
+                    if (addr) break;
                 } catch {}
             }
 
             if (addr) {
                 answer.address = addr;
-                cache.set(name, addr);
+                hosts.set(name, addr);
             } else {
                 return;
             }
@@ -47,11 +66,13 @@ const server = dns2.createServer({
         res.answers.push(answer);
         send(res);
     }
-});
-
-server.listen({
+}).listen({
     udp: {
         port: 53,
-        address: "123.123.123.123"
+        address: "0.0.0.0"
     }
+});
+
+process.on("SIGINT", () => {
+    fs.writeFileSync("./hosts", [...hosts].map(([hostname, ip]) => `${ip} ${hostname}`).join("\n"));
 });
